@@ -57,6 +57,31 @@ pub struct CellSize {
     pub width_meters: f64,
 }
 
+/// GeoJSON Polygon geometry for a DIGIPIN cell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoJsonPolygon {
+    #[serde(rename = "type")]
+    pub geometry_type: String,
+    pub coordinates: Vec<Vec<[f64; 2]>>,
+}
+
+/// GeoJSON properties attached to a DIGIPIN cell feature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoJsonCellProperties {
+    pub digipin: Option<String>,
+    pub center: Coordinates,
+    pub bounds: BoundingBox,
+}
+
+/// GeoJSON Feature for a DIGIPIN cell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GeoJsonCellFeature {
+    #[serde(rename = "type")]
+    pub feature_type: String,
+    pub geometry: GeoJsonPolygon,
+    pub properties: GeoJsonCellProperties,
+}
+
 /// A neighboring DIGIPIN cell around a source cell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Neighbor {
@@ -197,6 +222,20 @@ pub fn decode(digipin: &str) -> Result<Coordinates, DigiPinError> {
 pub fn cell(digipin: &str) -> Result<Cell, DigiPinError> {
     let normalized = normalize(digipin)?;
     let compact = compact(&normalized);
+    cell_from_compact(&compact)
+}
+
+/// Returns the center and bounding box of a partial DIGIPIN prefix.
+///
+/// Accepts 1 to 10 compact DIGIPIN characters. Shorter prefixes return the
+/// larger grid cell that contains every full DIGIPIN beginning with the prefix.
+pub fn partial_cell(digipin: &str) -> Result<Cell, DigiPinError> {
+    let normalized = normalize_partial(digipin)?;
+    let compact = compact(&normalized);
+    cell_from_compact(&compact)
+}
+
+fn cell_from_compact(compact: &str) -> Result<Cell, DigiPinError> {
     let mut min_lat = MIN_LAT;
     let mut max_lat = MAX_LAT;
     let mut min_lon = MIN_LON;
@@ -315,61 +354,6 @@ pub fn neighbors(digipin: &str) -> Result<Vec<Neighbor>, DigiPinError> {
     Ok(output)
 }
 
-/// Returns unique DIGIPIN candidates around a point within an approximate radius.
-///
-/// This is useful near cell boundaries where multiple adjacent DIGIPIN cells may be relevant.
-pub fn candidates_within_radius(
-    latitude: f64,
-    longitude: f64,
-    radius_meters: f64,
-) -> Result<Vec<String>, DigiPinError> {
-    let source_digipin = encode(latitude, longitude)?;
-    if radius_meters < 0.0 {
-        return Ok(vec![source_digipin]);
-    }
-
-    let source_cell = cell(&source_digipin)?;
-    let size = cell_size(&source_cell);
-    let max_lat_cells = (radius_meters / size.height_meters.max(0.001)).ceil() as i32 + 1;
-    let max_lon_cells = (radius_meters / size.width_meters.max(0.001)).ceil() as i32 + 1;
-    let lat_step = source_cell.bounds.max_latitude - source_cell.bounds.min_latitude;
-    let lon_step = source_cell.bounds.max_longitude - source_cell.bounds.min_longitude;
-    let padding_meters = ((size.height_meters.powi(2) + size.width_meters.powi(2)).sqrt()) / 2.0;
-
-    let mut output = vec![source_digipin];
-    for lat_index in -max_lat_cells..=max_lat_cells {
-        for lon_index in -max_lon_cells..=max_lon_cells {
-            let sample_lat = source_cell.center.latitude + lat_step * f64::from(lat_index);
-            let sample_lon = source_cell.center.longitude + lon_step * f64::from(lon_index);
-            if !is_supported_coordinate(sample_lat, sample_lon) {
-                continue;
-            }
-            let candidate = encode(sample_lat, sample_lon)?;
-            if output.contains(&candidate) {
-                continue;
-            }
-            let candidate_cell = cell(&candidate)?;
-            let distance_to_candidate = distance_meters(
-                Coordinates {
-                    latitude,
-                    longitude,
-                },
-                candidate_cell.center,
-            );
-            if distance_to_candidate <= radius_meters + padding_meters {
-                output.push(candidate);
-            }
-        }
-    }
-
-    if !output.contains(&encode(latitude, longitude)?) {
-        output.push(encode(latitude, longitude)?);
-    }
-
-    output.sort();
-    Ok(output)
-}
-
 /// Normalizes a DIGIPIN to canonical `XXX-XXX-XXXX` format.
 pub fn normalize(digipin: &str) -> Result<String, DigiPinError> {
     let compact = compact(digipin);
@@ -389,6 +373,75 @@ pub fn normalize(digipin: &str) -> Result<String, DigiPinError> {
         &compact[3..6],
         &compact[6..10]
     ))
+}
+
+/// Normalizes a partial DIGIPIN prefix with canonical grouping where possible.
+///
+/// Hyphens and whitespace are ignored, characters are uppercased, and lengths
+/// from 1 to 10 compact characters are accepted.
+pub fn normalize_partial(digipin: &str) -> Result<String, DigiPinError> {
+    let compact = compact(digipin);
+
+    if compact.is_empty() || compact.len() > DIGIPIN_LEN {
+        return Err(DigiPinError::InvalidLength);
+    }
+    for ch in compact.chars() {
+        if find_grid_position(ch).is_none() {
+            return Err(DigiPinError::InvalidCharacter { character: ch });
+        }
+    }
+
+    if compact.len() <= 3 {
+        Ok(compact)
+    } else if compact.len() <= 6 {
+        Ok(format!("{}-{}", &compact[0..3], &compact[3..]))
+    } else {
+        Ok(format!(
+            "{}-{}-{}",
+            &compact[0..3],
+            &compact[3..6],
+            &compact[6..]
+        ))
+    }
+}
+
+/// Returns a GeoJSON Polygon geometry for a cell.
+pub fn cell_geojson_polygon(cell: &Cell) -> GeoJsonPolygon {
+    GeoJsonPolygon {
+        geometry_type: "Polygon".to_string(),
+        coordinates: vec![vec![
+            [cell.bounds.min_longitude, cell.bounds.min_latitude],
+            [cell.bounds.max_longitude, cell.bounds.min_latitude],
+            [cell.bounds.max_longitude, cell.bounds.max_latitude],
+            [cell.bounds.min_longitude, cell.bounds.max_latitude],
+            [cell.bounds.min_longitude, cell.bounds.min_latitude],
+        ]],
+    }
+}
+
+/// Returns a GeoJSON Polygon geometry for a full or partial DIGIPIN.
+pub fn digipin_geojson_polygon(digipin: &str) -> Result<GeoJsonPolygon, DigiPinError> {
+    Ok(cell_geojson_polygon(&partial_cell(digipin)?))
+}
+
+/// Returns a GeoJSON Feature for a cell.
+pub fn cell_geojson_feature(cell: &Cell, digipin: Option<&str>) -> GeoJsonCellFeature {
+    GeoJsonCellFeature {
+        feature_type: "Feature".to_string(),
+        geometry: cell_geojson_polygon(cell),
+        properties: GeoJsonCellProperties {
+            digipin: digipin.map(str::to_string),
+            center: cell.center,
+            bounds: cell.bounds,
+        },
+    }
+}
+
+/// Returns a GeoJSON Feature for a full or partial DIGIPIN cell.
+pub fn digipin_geojson_feature(digipin: &str) -> Result<GeoJsonCellFeature, DigiPinError> {
+    let normalized = normalize_partial(digipin)?;
+    let cell = partial_cell(&normalized)?;
+    Ok(cell_geojson_feature(&cell, Some(&normalized)))
 }
 
 fn compact(digipin: &str) -> String {
@@ -445,6 +498,18 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_partial_input() {
+        assert_eq!(normalize_partial("4").unwrap(), "4");
+        assert_eq!(normalize_partial("4p3j").unwrap(), "4P3-J");
+        assert_eq!(normalize_partial("4p3 jk8 52").unwrap(), "4P3-JK8-52");
+        assert_eq!(normalize_partial(""), Err(DigiPinError::InvalidLength));
+        assert_eq!(
+            normalize_partial("4P3-JK8-52CZ"),
+            Err(DigiPinError::InvalidCharacter { character: 'Z' })
+        );
+    }
+
+    #[test]
     fn rejects_invalid_inputs() {
         assert_eq!(encode(39.0, 77.0), Err(DigiPinError::LatitudeOutOfRange));
         assert_eq!(encode(28.0, 100.0), Err(DigiPinError::LongitudeOutOfRange));
@@ -462,6 +527,19 @@ mod tests {
         assert!(cell.bounds.max_latitude >= cell.center.latitude);
         assert!(cell.bounds.min_longitude <= cell.center.longitude);
         assert!(cell.bounds.max_longitude >= cell.center.longitude);
+    }
+
+    #[test]
+    fn reports_partial_cell_bounds() {
+        let full = cell("4P3-JK8-52C9").unwrap();
+        let partial = partial_cell("4P3").unwrap();
+        assert!(contains(
+            &partial,
+            full.center.latitude,
+            full.center.longitude
+        ));
+        assert!(partial.bounds.max_latitude - partial.bounds.min_latitude > 0.5);
+        assert!(partial.bounds.max_longitude - partial.bounds.min_longitude > 0.5);
     }
 
     #[test]
@@ -487,13 +565,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_radius_candidates() {
-        let candidates = candidates_within_radius(12.924933, 77.599893, 5.0).unwrap();
-        assert!(candidates.len() >= 2);
-        assert!(candidates.contains(&encode(12.924933, 77.599893).unwrap()));
-    }
-
-    #[test]
     fn measures_distance() {
         let distance = distance_meters(
             Coordinates {
@@ -506,5 +577,36 @@ mod tests {
             },
         );
         assert!(distance > 10.0);
+    }
+
+    #[test]
+    fn exports_cell_geojson() {
+        let feature = digipin_geojson_feature("4P3-JK8-52C9").unwrap();
+        assert_eq!(feature.feature_type, "Feature");
+        assert_eq!(feature.geometry.geometry_type, "Polygon");
+        assert_eq!(feature.properties.digipin.unwrap(), "4P3-JK8-52C9");
+        assert_eq!(feature.geometry.coordinates[0].len(), 5);
+        assert_eq!(
+            feature.geometry.coordinates[0][0],
+            feature.geometry.coordinates[0][4]
+        );
+    }
+
+    #[test]
+    fn encoded_coordinates_are_contained_by_their_cells_for_sample_grid() {
+        let latitudes = [3.0, 8.75, 14.5, 20.25, 26.0, 31.75, 37.5];
+        let longitudes = [64.0, 69.75, 75.5, 81.25, 87.0, 92.75, 99.0];
+
+        for latitude in latitudes {
+            for longitude in longitudes {
+                let digipin = encode(latitude, longitude).unwrap();
+                let cell = cell(&digipin).unwrap();
+                assert!(
+                    contains(&cell, latitude, longitude),
+                    "{latitude},{longitude} encoded to {digipin} outside {:?}",
+                    cell.bounds
+                );
+            }
+        }
     }
 }
