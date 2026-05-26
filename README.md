@@ -55,12 +55,39 @@ Inspect cell center and bounds:
 digipin --json cell 4P3-JK8-52C9
 ```
 
+Get precision-aware metadata for a coordinate:
+
+```bash
+digipin --json locate 12.9716 77.5946
+```
+
+List adjacent DIGIPIN cells:
+
+```bash
+digipin neighbors 4P3-JK8-52C9
+```
+
+List DIGIPIN candidates around a coordinate and radius, useful near grid
+boundaries:
+
+```bash
+digipin candidates 12.924933 77.599893 5
+```
+
+Measure distance between two coordinates:
+
+```bash
+digipin distance 12.9716 77.5946 12.9717 77.5946
+```
+
 ## Library
 
 ```rust
 let code = digipin::encode(12.9716, 77.5946)?;
 let coords = digipin::decode(&code)?;
 let cell = digipin::cell(&code)?;
+let info = digipin::locate(12.9716, 77.5946)?;
+let nearby = digipin::candidates_within_radius(12.9716, 77.5946, 5.0)?;
 ```
 
 ## Features
@@ -70,7 +97,20 @@ let cell = digipin::cell(&code)?;
 - Normalize flexible input such as `4p3jk852c9`.
 - Validate DIGIPIN strings.
 - Return grid-cell bounds for precision-aware applications.
+- Return approximate cell width/height in meters.
+- Check whether a coordinate falls inside a DIGIPIN cell.
+- Return all 8 adjacent DIGIPIN cells.
+- Return nearby DIGIPIN candidates for radius/boundary checks.
+- Measure haversine distance between coordinates.
+- Return rich `locate` metadata for one coordinate lookup.
 - CLI supports plain text and JSON output.
+
+## Design note
+
+The core encode/decode algorithm is kept compatible with the India Post
+reference behavior. Extra APIs are built around that algorithm so applications
+can reason about precision, boundaries, neighboring cells, and JSON workflows
+without changing official DIGIPIN output.
 
 ## License
 

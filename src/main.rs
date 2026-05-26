@@ -17,12 +17,29 @@ struct Cli {
 enum Command {
     /// Encode latitude/longitude to DIGIPIN.
     Encode { latitude: f64, longitude: f64 },
+    /// Encode coordinates and print cell precision metadata.
+    Locate { latitude: f64, longitude: f64 },
     /// Decode DIGIPIN to center-point latitude/longitude.
     Decode { digipin: String },
     /// Validate and normalize a DIGIPIN.
     Validate { digipin: String },
     /// Print the center and bounding box for a DIGIPIN cell.
     Cell { digipin: String },
+    /// Print the 8 adjacent DIGIPIN cells.
+    Neighbors { digipin: String },
+    /// Print unique DIGIPIN candidates around a coordinate and radius.
+    Candidates {
+        latitude: f64,
+        longitude: f64,
+        radius_meters: f64,
+    },
+    /// Print distance between two coordinates in meters.
+    Distance {
+        from_latitude: f64,
+        from_longitude: f64,
+        to_latitude: f64,
+        to_longitude: f64,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +62,13 @@ struct ValidateOutput {
     valid: bool,
     normalized: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DistanceOutput {
+    from: digipin::Coordinates,
+    to: digipin::Coordinates,
+    distance_meters: f64,
 }
 
 fn main() {
@@ -83,6 +107,24 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 })?;
             } else {
                 println!("{},{}", coords.latitude, coords.longitude);
+            }
+        }
+        Command::Locate {
+            latitude,
+            longitude,
+        } => {
+            let info = digipin::locate(latitude, longitude)?;
+            if cli.json {
+                print_json(&info)?;
+            } else {
+                println!(
+                    "{} center={},{} size={}m x {}m",
+                    info.digipin,
+                    info.cell.center.latitude,
+                    info.cell.center.longitude,
+                    info.cell_size.height_meters,
+                    info.cell_size.width_meters
+                );
             }
         }
         Command::Validate { digipin: input } => match digipin::normalize(&input) {
@@ -126,6 +168,54 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     cell.bounds.max_latitude,
                     cell.bounds.max_longitude
                 );
+            }
+        }
+        Command::Neighbors { digipin: input } => {
+            let normalized = digipin::normalize(&input)?;
+            let neighbors = digipin::neighbors(&normalized)?;
+            if cli.json {
+                print_json(&neighbors)?;
+            } else {
+                for neighbor in neighbors {
+                    println!("{:?} {}", neighbor.direction, neighbor.digipin);
+                }
+            }
+        }
+        Command::Candidates {
+            latitude,
+            longitude,
+            radius_meters,
+        } => {
+            let candidates = digipin::candidates_within_radius(latitude, longitude, radius_meters)?;
+            if cli.json {
+                print_json(&candidates)?;
+            } else {
+                println!("{}", candidates.join("\n"));
+            }
+        }
+        Command::Distance {
+            from_latitude,
+            from_longitude,
+            to_latitude,
+            to_longitude,
+        } => {
+            let from = digipin::Coordinates {
+                latitude: from_latitude,
+                longitude: from_longitude,
+            };
+            let to = digipin::Coordinates {
+                latitude: to_latitude,
+                longitude: to_longitude,
+            };
+            let distance_meters = digipin::distance_meters(from, to);
+            if cli.json {
+                print_json(&DistanceOutput {
+                    from,
+                    to,
+                    distance_meters,
+                })?;
+            } else {
+                println!("{distance_meters:.3}");
             }
         }
     }

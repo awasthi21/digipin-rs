@@ -23,6 +23,8 @@ const DIGIPIN_LEN: usize = 10;
 /// Approximate DIGIPIN grid cell size at the equator after 10 levels.
 pub const APPROX_CELL_SIZE_METERS: f64 = 3.8;
 
+const EARTH_RADIUS_METERS: f64 = 6_371_000.0;
+
 /// DIGIPIN-supported geographic bounding box.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BoundingBox {
@@ -44,6 +46,47 @@ pub struct Coordinates {
 pub struct Cell {
     pub center: Coordinates,
     pub bounds: BoundingBox,
+}
+
+/// Approximate physical dimensions for one DIGIPIN cell.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CellSize {
+    pub latitude_span_degrees: f64,
+    pub longitude_span_degrees: f64,
+    pub height_meters: f64,
+    pub width_meters: f64,
+}
+
+/// A neighboring DIGIPIN cell around a source cell.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Neighbor {
+    pub direction: Direction,
+    pub digipin: String,
+    pub cell: Cell,
+}
+
+/// Compass direction for a neighboring cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    NorthWest,
+    North,
+    NorthEast,
+    West,
+    East,
+    SouthWest,
+    South,
+    SouthEast,
+}
+
+/// Rich metadata for one coordinate lookup.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocationInfo {
+    pub input: Coordinates,
+    pub digipin: String,
+    pub cell: Cell,
+    pub cell_size: CellSize,
+    pub distance_to_cell_center_meters: f64,
 }
 
 /// Errors returned by DIGIPIN operations.
@@ -123,6 +166,28 @@ pub fn encode(latitude: f64, longitude: f64) -> Result<String, DigiPinError> {
     Ok(digipin)
 }
 
+/// Encodes a coordinate and returns precision-aware metadata.
+pub fn locate(latitude: f64, longitude: f64) -> Result<LocationInfo, DigiPinError> {
+    let digipin = encode(latitude, longitude)?;
+    let cell = cell(&digipin)?;
+    Ok(LocationInfo {
+        input: Coordinates {
+            latitude,
+            longitude,
+        },
+        digipin,
+        cell,
+        cell_size: cell_size(&cell),
+        distance_to_cell_center_meters: round_3(distance_meters(
+            Coordinates {
+                latitude,
+                longitude,
+            },
+            cell.center,
+        )),
+    })
+}
+
 /// Decodes a DIGIPIN into the center-point of its grid cell.
 pub fn decode(digipin: &str) -> Result<Coordinates, DigiPinError> {
     Ok(cell(digipin)?.center)
@@ -167,6 +232,142 @@ pub fn cell(digipin: &str) -> Result<Cell, DigiPinError> {
             max_longitude: max_lon,
         },
     })
+}
+
+/// Returns approximate width/height for a cell in meters.
+pub fn cell_size(cell: &Cell) -> CellSize {
+    let south_west = Coordinates {
+        latitude: cell.bounds.min_latitude,
+        longitude: cell.bounds.min_longitude,
+    };
+    let north_west = Coordinates {
+        latitude: cell.bounds.max_latitude,
+        longitude: cell.bounds.min_longitude,
+    };
+    let west_center = Coordinates {
+        latitude: cell.center.latitude,
+        longitude: cell.bounds.min_longitude,
+    };
+    let east_center = Coordinates {
+        latitude: cell.center.latitude,
+        longitude: cell.bounds.max_longitude,
+    };
+
+    CellSize {
+        latitude_span_degrees: cell.bounds.max_latitude - cell.bounds.min_latitude,
+        longitude_span_degrees: cell.bounds.max_longitude - cell.bounds.min_longitude,
+        height_meters: round_3(distance_meters(south_west, north_west)),
+        width_meters: round_3(distance_meters(west_center, east_center)),
+    }
+}
+
+/// Returns true if a coordinate lies inside the supplied cell bounds.
+pub fn contains(cell: &Cell, latitude: f64, longitude: f64) -> bool {
+    (cell.bounds.min_latitude..=cell.bounds.max_latitude).contains(&latitude)
+        && (cell.bounds.min_longitude..=cell.bounds.max_longitude).contains(&longitude)
+}
+
+/// Returns the great-circle distance between two coordinates in meters.
+pub fn distance_meters(from: Coordinates, to: Coordinates) -> f64 {
+    let lat1 = from.latitude.to_radians();
+    let lat2 = to.latitude.to_radians();
+    let delta_lat = (to.latitude - from.latitude).to_radians();
+    let delta_lon = (to.longitude - from.longitude).to_radians();
+
+    let a =
+        (delta_lat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (delta_lon / 2.0).sin().powi(2);
+    let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
+    EARTH_RADIUS_METERS * c
+}
+
+/// Returns the 8 adjacent DIGIPIN cells, skipping neighbors outside India Post's supported box.
+pub fn neighbors(digipin: &str) -> Result<Vec<Neighbor>, DigiPinError> {
+    let source = cell(digipin)?;
+    let lat_step = source.bounds.max_latitude - source.bounds.min_latitude;
+    let lon_step = source.bounds.max_longitude - source.bounds.min_longitude;
+
+    let specs = [
+        (Direction::NorthWest, 1.0, -1.0),
+        (Direction::North, 1.0, 0.0),
+        (Direction::NorthEast, 1.0, 1.0),
+        (Direction::West, 0.0, -1.0),
+        (Direction::East, 0.0, 1.0),
+        (Direction::SouthWest, -1.0, -1.0),
+        (Direction::South, -1.0, 0.0),
+        (Direction::SouthEast, -1.0, 1.0),
+    ];
+
+    let mut output = Vec::with_capacity(8);
+    for (direction, lat_mul, lon_mul) in specs {
+        let latitude = source.center.latitude + lat_step * lat_mul;
+        let longitude = source.center.longitude + lon_step * lon_mul;
+        if !is_supported_coordinate(latitude, longitude) {
+            continue;
+        }
+        let neighbor_digipin = encode(latitude, longitude)?;
+        output.push(Neighbor {
+            direction,
+            cell: cell(&neighbor_digipin)?,
+            digipin: neighbor_digipin,
+        });
+    }
+
+    Ok(output)
+}
+
+/// Returns unique DIGIPIN candidates around a point within an approximate radius.
+///
+/// This is useful near cell boundaries where multiple adjacent DIGIPIN cells may be relevant.
+pub fn candidates_within_radius(
+    latitude: f64,
+    longitude: f64,
+    radius_meters: f64,
+) -> Result<Vec<String>, DigiPinError> {
+    let source_digipin = encode(latitude, longitude)?;
+    if radius_meters < 0.0 {
+        return Ok(vec![source_digipin]);
+    }
+
+    let source_cell = cell(&source_digipin)?;
+    let size = cell_size(&source_cell);
+    let max_lat_cells = (radius_meters / size.height_meters.max(0.001)).ceil() as i32 + 1;
+    let max_lon_cells = (radius_meters / size.width_meters.max(0.001)).ceil() as i32 + 1;
+    let lat_step = source_cell.bounds.max_latitude - source_cell.bounds.min_latitude;
+    let lon_step = source_cell.bounds.max_longitude - source_cell.bounds.min_longitude;
+    let padding_meters = ((size.height_meters.powi(2) + size.width_meters.powi(2)).sqrt()) / 2.0;
+
+    let mut output = vec![source_digipin];
+    for lat_index in -max_lat_cells..=max_lat_cells {
+        for lon_index in -max_lon_cells..=max_lon_cells {
+            let sample_lat = source_cell.center.latitude + lat_step * f64::from(lat_index);
+            let sample_lon = source_cell.center.longitude + lon_step * f64::from(lon_index);
+            if !is_supported_coordinate(sample_lat, sample_lon) {
+                continue;
+            }
+            let candidate = encode(sample_lat, sample_lon)?;
+            if output.contains(&candidate) {
+                continue;
+            }
+            let candidate_cell = cell(&candidate)?;
+            let distance_to_candidate = distance_meters(
+                Coordinates {
+                    latitude,
+                    longitude,
+                },
+                candidate_cell.center,
+            );
+            if distance_to_candidate <= radius_meters + padding_meters {
+                output.push(candidate);
+            }
+        }
+    }
+
+    if !output.contains(&encode(latitude, longitude)?) {
+        output.push(encode(latitude, longitude)?);
+    }
+
+    output.sort();
+    Ok(output)
 }
 
 /// Normalizes a DIGIPIN to canonical `XXX-XXX-XXXX` format.
@@ -218,6 +419,10 @@ fn round_6(value: f64) -> f64 {
     (value * 1_000_000.0).round() / 1_000_000.0
 }
 
+fn round_3(value: f64) -> f64 {
+    (value * 1_000.0).round() / 1_000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,5 +462,49 @@ mod tests {
         assert!(cell.bounds.max_latitude >= cell.center.latitude);
         assert!(cell.bounds.min_longitude <= cell.center.longitude);
         assert!(cell.bounds.max_longitude >= cell.center.longitude);
+    }
+
+    #[test]
+    fn reports_location_info() {
+        let info = locate(12.9716, 77.5946).unwrap();
+        assert_eq!(info.digipin, "4P3-JK8-52C9");
+        assert!(info.cell_size.height_meters > 0.0);
+        assert!(info.cell_size.width_meters > 0.0);
+        assert!(contains(
+            &info.cell,
+            info.input.latitude,
+            info.input.longitude
+        ));
+    }
+
+    #[test]
+    fn reports_neighbors() {
+        let neighbors = neighbors("4P3-JK8-52C9").unwrap();
+        assert_eq!(neighbors.len(), 8);
+        assert!(neighbors
+            .iter()
+            .any(|neighbor| neighbor.direction == Direction::North));
+    }
+
+    #[test]
+    fn reports_radius_candidates() {
+        let candidates = candidates_within_radius(12.924933, 77.599893, 5.0).unwrap();
+        assert!(candidates.len() >= 2);
+        assert!(candidates.contains(&encode(12.924933, 77.599893).unwrap()));
+    }
+
+    #[test]
+    fn measures_distance() {
+        let distance = distance_meters(
+            Coordinates {
+                latitude: 12.9716,
+                longitude: 77.5946,
+            },
+            Coordinates {
+                latitude: 12.9717,
+                longitude: 77.5946,
+            },
+        );
+        assert!(distance > 10.0);
     }
 }
