@@ -1,6 +1,7 @@
 use digipin::{
-    cell, cell_size, contains, decode, encode, is_supported_coordinate, is_valid, locate,
-    neighbors, normalize, supported_bounds, Coordinates, DigiPinError, Direction,
+    cell, cell_size, compare_codes, contains, decode, encode, explore_prefixes, geohash,
+    is_supported_coordinate, is_valid, locate, neighbors, normalize, plus_code, supported_bounds,
+    Coordinates, DigiPinError, Direction,
 };
 
 #[test]
@@ -67,4 +68,20 @@ fn public_api_distance_is_symmetric() {
 
     assert!(ab > 10.0);
     assert!((ab - ba).abs() < f64::EPSILON);
+}
+
+#[test]
+fn public_api_explores_and_compares_codes() {
+    let levels = explore_prefixes("4P3-JK8").expect("prefix explorer");
+    assert_eq!(levels.len(), 6);
+    assert_eq!(levels.first().unwrap().prefix, "4");
+    assert_eq!(levels.last().unwrap().prefix, "4P3-JK8");
+
+    assert_eq!(geohash(12.9716, 77.5946, 10).unwrap(), "tdr1v9qtj1");
+    assert_eq!(plus_code(12.9716, 77.5946).unwrap(), "7J4VXHCV+JR");
+
+    let comparison = compare_codes(12.9716, 77.5946, 10).expect("comparison");
+    assert_eq!(comparison.digipin, "4P3-JK8-52C9");
+    assert_eq!(comparison.geohash, "tdr1v9qtj1");
+    assert_eq!(comparison.plus_code, "7J4VXHCV+JR");
 }

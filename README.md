@@ -96,8 +96,12 @@ Trimmed preview:
 | Validate and normalize | `digipin validate <digipin>` |
 | Inspect cell bounds | `digipin cell <digipin>` |
 | Inspect a prefix cell | `digipin partial-cell <prefix>` |
+| Explore prefix hierarchy | `digipin explore <digipin>` |
 | Export GeoJSON | `digipin geojson <digipin>` |
 | List neighboring cells | `digipin neighbors <digipin>` |
+| Compare code systems | `digipin compare <lat> <lon>` |
+| Generate GeoHash | `digipin geohash <lat> <lon>` |
+| Generate Plus Code | `digipin plus-code <lat> <lon>` |
 | Measure distance | `digipin distance <lat1> <lon1> <lat2> <lon2>` |
 | Convert CSV files | `digipin batch-csv input.csv --mode encode` |
 | Convert JSONL streams | `digipin batch-jsonl input.jsonl --mode decode` |
@@ -127,6 +131,12 @@ Inspect a partial prefix:
 
 ```bash
 digipin --json partial-cell 4P3
+```
+
+Explore every prefix level:
+
+```bash
+digipin explore 4P3-JK8
 ```
 
 Export a cell as GeoJSON:
@@ -161,6 +171,19 @@ Generate shell completions:
 digipin completions zsh > _digipin
 ```
 
+Compare DIGIPIN, GeoHash, and Plus Code:
+
+```bash
+digipin compare 12.9716 77.5946
+```
+
+```text
+DIGIPIN: 4P3-JK8-52C9
+GeoHash: tdr1v9qtj1
+Plus Code: 7J4VXHCV+JR
+DIGIPIN cell: center=12.971601,77.594584 size=3.818m x 3.72m
+```
+
 ## Rust Library
 
 ```rust
@@ -170,12 +193,19 @@ let cell = digipin::cell(&code)?;
 let info = digipin::locate(12.9716, 77.5946)?;
 let prefix = digipin::partial_cell("4P3")?;
 let geojson = digipin::digipin_geojson_feature(&code)?;
+let comparison = digipin::compare_codes(12.9716, 77.5946, 10)?;
 ```
 
 Run the included example:
 
 ```bash
 cargo run --example quickstart
+```
+
+Run the benchmark example:
+
+```bash
+cargo run --release --example benchmark -- 1000000
 ```
 
 ## HTTP API
@@ -194,9 +224,28 @@ Available endpoints:
 | `GET /encode?latitude=...&longitude=...` | Encode coordinates |
 | `GET /decode?digipin=...` | Decode DIGIPIN |
 | `GET /locate?latitude=...&longitude=...` | Encode with metadata |
+| `GET /compare?latitude=...&longitude=...` | Compare DIGIPIN, GeoHash, and Plus Code |
+| `GET /plus-code?latitude=...&longitude=...` | Encode coordinates to Plus Code |
+| `GET /geohash?latitude=...&longitude=...` | Encode coordinates to GeoHash |
+| `GET /explore?digipin=...` | Return all prefix levels |
 | `GET /cell?digipin=...` | Return cell center and bounds |
 | `GET /geojson?digipin=...` | Return cell as GeoJSON Feature |
 | `GET /openapi.json` | Return OpenAPI document |
+
+## Docker
+
+Build the image:
+
+```bash
+docker build -t digipin-rs .
+```
+
+Run the API server:
+
+```bash
+docker run --rm -p 8080:8080 digipin-rs
+curl 'http://127.0.0.1:8080/compare?latitude=12.9716&longitude=77.5946'
+```
 
 ## Current Features
 
@@ -206,13 +255,19 @@ Available endpoints:
 - Typed errors through `DigiPinError`.
 - Full cell center and bounds.
 - Partial prefix cells for hierarchy exploration.
+- Prefix explorer output for every DIGIPIN level.
 - Approximate cell width and height in meters.
 - Coordinate containment checks.
 - Neighboring DIGIPIN cells.
 - Haversine distance utility.
+- GeoHash encoding.
+- Plus Code / Open Location Code encoding.
+- DIGIPIN vs GeoHash vs Plus Code comparison.
 - GeoJSON Polygon and Feature export.
 - CSV and JSONL batch workflows.
 - Local HTTP API server.
+- Dockerfile for one-command API deployment.
+- Lightweight benchmark example.
 - OpenAPI document generation.
 - Shell completion generation.
 - Unit and integration tests.
@@ -221,16 +276,11 @@ Available endpoints:
 
 | Priority | Feature | Why It Matters |
 | --- | --- | --- |
-| 1 | Prefix Explorer | Inspect each DIGIPIN prefix level with center, bounds, and approximate cell size. |
-| 2 | GeoHash Comparison Tool | Compare DIGIPIN with GeoHash and Plus Codes using the same coordinate. Useful for developers evaluating location systems. |
-| 3 | Plus Code Converter | Return DIGIPIN and Open Location Code side by side for interoperability. |
-| 4 | Web Playground | Browser UI for encode/decode, prefix explorer, GeoJSON preview, and map display. |
-| 5 | WASM Build | Run the encoder directly in browser apps without a backend. |
-| 6 | Docker Image | One-command API server for local or cloud deployment. |
-| 7 | Python Package | Make it useful for data teams and notebooks. |
-| 8 | Node Package | Make it easy to use from web apps and backend services. |
-| 9 | Postgres Functions | Enable DIGIPIN conversion directly inside databases. |
-| 10 | Benchmark Suite | Publish performance numbers for batch conversion. |
+| 1 | Web Playground | Browser UI for encode/decode, prefix explorer, GeoJSON preview, and map display. |
+| 2 | WASM Build | Run the encoder directly in browser apps without a backend. |
+| 3 | Python Package | Make it useful for data teams and notebooks. |
+| 4 | Node Package | Make it easy to use from web apps and backend services. |
+| 5 | Postgres Functions | Enable DIGIPIN conversion directly inside databases. |
 
 ## Official References
 

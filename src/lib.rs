@@ -19,6 +19,10 @@ const MAX_LAT: f64 = 38.5;
 const MIN_LON: f64 = 63.5;
 const MAX_LON: f64 = 99.5;
 const DIGIPIN_LEN: usize = 10;
+const GEOHASH_ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+const PLUS_CODE_ALPHABET: &[u8; 20] = b"23456789CFGHJMPQRVWX";
+const PLUS_CODE_SEPARATOR_POSITION: usize = 8;
+const PLUS_CODE_PAIR_RESOLUTIONS: [f64; 5] = [20.0, 1.0, 0.05, 0.0025, 0.000125];
 
 /// Approximate DIGIPIN grid cell size at the equator after 10 levels.
 pub const APPROX_CELL_SIZE_METERS: f64 = 3.8;
@@ -112,6 +116,26 @@ pub struct LocationInfo {
     pub cell: Cell,
     pub cell_size: CellSize,
     pub distance_to_cell_center_meters: f64,
+}
+
+/// One row in a DIGIPIN prefix hierarchy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrefixLevel {
+    pub level: usize,
+    pub prefix: String,
+    pub cell: Cell,
+    pub cell_size: CellSize,
+}
+
+/// Side-by-side code comparison for one coordinate.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CodeComparison {
+    pub input: Coordinates,
+    pub digipin: String,
+    pub geohash: String,
+    pub plus_code: String,
+    pub cell: Cell,
+    pub cell_size: CellSize,
 }
 
 /// Errors returned by DIGIPIN operations.
@@ -210,6 +234,123 @@ pub fn locate(latitude: f64, longitude: f64) -> Result<LocationInfo, DigiPinErro
             },
             cell.center,
         )),
+    })
+}
+
+/// Returns every prefix level for a full or partial DIGIPIN.
+pub fn explore_prefixes(digipin: &str) -> Result<Vec<PrefixLevel>, DigiPinError> {
+    let normalized = normalize_partial(digipin)?;
+    let compact = compact(&normalized);
+    let mut levels = Vec::with_capacity(compact.len());
+
+    for level in 1..=compact.len() {
+        let prefix = normalize_partial(&compact[..level])?;
+        let cell = partial_cell(&prefix)?;
+        levels.push(PrefixLevel {
+            level,
+            prefix,
+            cell,
+            cell_size: cell_size(&cell),
+        });
+    }
+
+    Ok(levels)
+}
+
+/// Encodes latitude/longitude to a standard GeoHash.
+pub fn geohash(latitude: f64, longitude: f64, precision: usize) -> Result<String, DigiPinError> {
+    if !(MIN_LAT..=MAX_LAT).contains(&latitude) {
+        return Err(DigiPinError::LatitudeOutOfRange);
+    }
+    if !(MIN_LON..=MAX_LON).contains(&longitude) {
+        return Err(DigiPinError::LongitudeOutOfRange);
+    }
+
+    let mut lat_range = [-90.0, 90.0];
+    let mut lon_range = [-180.0, 180.0];
+    let mut even_bit = true;
+    let mut bit = 0;
+    let mut ch = 0_u8;
+    let mut output = String::with_capacity(precision);
+
+    while output.len() < precision {
+        if even_bit {
+            let mid = (lon_range[0] + lon_range[1]) / 2.0;
+            if longitude >= mid {
+                ch = (ch << 1) | 1;
+                lon_range[0] = mid;
+            } else {
+                ch <<= 1;
+                lon_range[1] = mid;
+            }
+        } else {
+            let mid = (lat_range[0] + lat_range[1]) / 2.0;
+            if latitude >= mid {
+                ch = (ch << 1) | 1;
+                lat_range[0] = mid;
+            } else {
+                ch <<= 1;
+                lat_range[1] = mid;
+            }
+        }
+
+        even_bit = !even_bit;
+        bit += 1;
+
+        if bit == 5 {
+            output.push(GEOHASH_ALPHABET[ch as usize] as char);
+            bit = 0;
+            ch = 0;
+        }
+    }
+
+    Ok(output)
+}
+
+/// Encodes latitude/longitude to a 10-character Open Location Code / Plus Code.
+pub fn plus_code(latitude: f64, longitude: f64) -> Result<String, DigiPinError> {
+    if !(MIN_LAT..=MAX_LAT).contains(&latitude) {
+        return Err(DigiPinError::LatitudeOutOfRange);
+    }
+    if !(MIN_LON..=MAX_LON).contains(&longitude) {
+        return Err(DigiPinError::LongitudeOutOfRange);
+    }
+
+    let mut adjusted_latitude = latitude.min(90.0 - 1e-12) + 90.0;
+    let mut adjusted_longitude = normalize_longitude(longitude) + 180.0;
+    let mut code = String::with_capacity(11);
+
+    for resolution in PLUS_CODE_PAIR_RESOLUTIONS {
+        let lat_digit = (adjusted_latitude / resolution).floor().clamp(0.0, 19.0) as usize;
+        let lon_digit = (adjusted_longitude / resolution).floor().clamp(0.0, 19.0) as usize;
+        code.push(PLUS_CODE_ALPHABET[lat_digit] as char);
+        code.push(PLUS_CODE_ALPHABET[lon_digit] as char);
+        adjusted_latitude -= lat_digit as f64 * resolution;
+        adjusted_longitude -= lon_digit as f64 * resolution;
+    }
+
+    code.insert(PLUS_CODE_SEPARATOR_POSITION, '+');
+    Ok(code)
+}
+
+/// Returns DIGIPIN, GeoHash, Plus Code, and DIGIPIN cell metadata for one point.
+pub fn compare_codes(
+    latitude: f64,
+    longitude: f64,
+    geohash_precision: usize,
+) -> Result<CodeComparison, DigiPinError> {
+    let digipin = encode(latitude, longitude)?;
+    let cell = cell(&digipin)?;
+    Ok(CodeComparison {
+        input: Coordinates {
+            latitude,
+            longitude,
+        },
+        geohash: geohash(latitude, longitude, geohash_precision)?,
+        plus_code: plus_code(latitude, longitude)?,
+        digipin,
+        cell,
+        cell_size: cell_size(&cell),
     })
 }
 
@@ -476,6 +617,14 @@ fn round_3(value: f64) -> f64 {
     (value * 1_000.0).round() / 1_000.0
 }
 
+fn normalize_longitude(longitude: f64) -> f64 {
+    let mut normalized = (longitude + 180.0) % 360.0;
+    if normalized < 0.0 {
+        normalized += 360.0;
+    }
+    normalized - 180.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,6 +692,15 @@ mod tests {
     }
 
     #[test]
+    fn explores_prefix_levels() {
+        let levels = explore_prefixes("4P3-JK8").unwrap();
+        assert_eq!(levels.len(), 6);
+        assert_eq!(levels[0].prefix, "4");
+        assert_eq!(levels[5].prefix, "4P3-JK8");
+        assert!(levels[0].cell_size.width_meters > levels[5].cell_size.width_meters);
+    }
+
+    #[test]
     fn reports_location_info() {
         let info = locate(12.9716, 77.5946).unwrap();
         assert_eq!(info.digipin, "4P3-JK8-52C9");
@@ -577,6 +735,25 @@ mod tests {
             },
         );
         assert!(distance > 10.0);
+    }
+
+    #[test]
+    fn encodes_geohash_and_plus_code() {
+        assert_eq!(geohash(12.9716, 77.5946, 10).unwrap(), "tdr1v9qtj1");
+        assert_eq!(plus_code(12.9716, 77.5946).unwrap(), "7J4VXHCV+JR");
+    }
+
+    #[test]
+    fn compares_codes() {
+        let comparison = compare_codes(12.9716, 77.5946, 10).unwrap();
+        assert_eq!(comparison.digipin, "4P3-JK8-52C9");
+        assert_eq!(comparison.geohash, "tdr1v9qtj1");
+        assert_eq!(comparison.plus_code, "7J4VXHCV+JR");
+        assert!(contains(
+            &comparison.cell,
+            comparison.input.latitude,
+            comparison.input.longitude
+        ));
     }
 
     #[test]

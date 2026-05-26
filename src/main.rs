@@ -35,6 +35,8 @@ enum Command {
     Cell { digipin: String },
     /// Print the center and bounding box for a partial DIGIPIN prefix.
     PartialCell { digipin: String },
+    /// Print every prefix level for a full or partial DIGIPIN.
+    Explore { digipin: String },
     /// Print a DIGIPIN cell as a GeoJSON Feature.
     Geojson { digipin: String },
     /// Print the 8 adjacent DIGIPIN cells.
@@ -45,6 +47,22 @@ enum Command {
         from_longitude: f64,
         to_latitude: f64,
         to_longitude: f64,
+    },
+    /// Compare DIGIPIN, GeoHash, and Plus Code for one coordinate.
+    Compare {
+        latitude: f64,
+        longitude: f64,
+        #[arg(long, default_value_t = 10)]
+        geohash_precision: usize,
+    },
+    /// Encode latitude/longitude to an Open Location Code / Plus Code.
+    PlusCode { latitude: f64, longitude: f64 },
+    /// Encode latitude/longitude to GeoHash.
+    Geohash {
+        latitude: f64,
+        longitude: f64,
+        #[arg(long, default_value_t = 10)]
+        precision: usize,
     },
     /// Process a CSV file with latitude/longitude or DIGIPIN columns.
     BatchCsv {
@@ -242,6 +260,27 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Command::Explore { digipin: input } => {
+            let levels = digipin::explore_prefixes(&input)?;
+            if cli.json {
+                print_json(&levels)?;
+            } else {
+                println!(
+                    "level,prefix,center_latitude,center_longitude,height_meters,width_meters"
+                );
+                for level in levels {
+                    println!(
+                        "{},{},{},{},{},{}",
+                        level.level,
+                        level.prefix,
+                        level.cell.center.latitude,
+                        level.cell.center.longitude,
+                        level.cell_size.height_meters,
+                        level.cell_size.width_meters
+                    );
+                }
+            }
+        }
         Command::Geojson { digipin: input } => {
             let feature = digipin::digipin_geojson_feature(&input)?;
             if cli.json {
@@ -284,6 +323,59 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 })?;
             } else {
                 println!("{distance_meters:.3}");
+            }
+        }
+        Command::Compare {
+            latitude,
+            longitude,
+            geohash_precision,
+        } => {
+            let comparison = digipin::compare_codes(latitude, longitude, geohash_precision)?;
+            if cli.json {
+                print_json(&comparison)?;
+            } else {
+                println!("DIGIPIN: {}", comparison.digipin);
+                println!("GeoHash: {}", comparison.geohash);
+                println!("Plus Code: {}", comparison.plus_code);
+                println!(
+                    "DIGIPIN cell: center={},{} size={}m x {}m",
+                    comparison.cell.center.latitude,
+                    comparison.cell.center.longitude,
+                    comparison.cell_size.height_meters,
+                    comparison.cell_size.width_meters
+                );
+            }
+        }
+        Command::PlusCode {
+            latitude,
+            longitude,
+        } => {
+            let plus_code = digipin::plus_code(latitude, longitude)?;
+            if cli.json {
+                print_json(&serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "plus_code": plus_code
+                }))?;
+            } else {
+                println!("{plus_code}");
+            }
+        }
+        Command::Geohash {
+            latitude,
+            longitude,
+            precision,
+        } => {
+            let geohash = digipin::geohash(latitude, longitude, precision)?;
+            if cli.json {
+                print_json(&serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "precision": precision,
+                    "geohash": geohash
+                }))?;
+            } else {
+                println!("{geohash}");
             }
         }
         Command::BatchCsv {
@@ -551,6 +643,53 @@ fn handle_http(stream: &mut TcpStream) -> Result<(), Box<dyn std::error::Error>>
             let (latitude, longitude) = parse_lat_lon(&params)?;
             write_response(stream, 200, &digipin::locate(latitude, longitude)?)
         }
+        "/compare" => {
+            let (latitude, longitude) = parse_lat_lon(&params)?;
+            let geohash_precision = params
+                .get("geohash_precision")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(10);
+            write_response(
+                stream,
+                200,
+                &digipin::compare_codes(latitude, longitude, geohash_precision)?,
+            )
+        }
+        "/plus-code" => {
+            let (latitude, longitude) = parse_lat_lon(&params)?;
+            write_response(
+                stream,
+                200,
+                &serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "plus_code": digipin::plus_code(latitude, longitude)?
+                }),
+            )
+        }
+        "/geohash" => {
+            let (latitude, longitude) = parse_lat_lon(&params)?;
+            let precision = params
+                .get("precision")
+                .map(|value| value.parse())
+                .transpose()?
+                .unwrap_or(10);
+            write_response(
+                stream,
+                200,
+                &serde_json::json!({
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "precision": precision,
+                    "geohash": digipin::geohash(latitude, longitude, precision)?
+                }),
+            )
+        }
+        "/explore" => {
+            let input = required(&params, "digipin")?;
+            write_response(stream, 200, &digipin::explore_prefixes(input)?)
+        }
         "/cell" => {
             let input = required(&params, "digipin")?;
             write_response(stream, 200, &digipin::cell(input)?)
@@ -647,6 +786,10 @@ fn openapi_document() -> Result<String, serde_json::Error> {
             "/encode": { "get": { "summary": "Encode latitude/longitude to DIGIPIN" } },
             "/decode": { "get": { "summary": "Decode DIGIPIN to center coordinates" } },
             "/locate": { "get": { "summary": "Return DIGIPIN and precision metadata" } },
+            "/compare": { "get": { "summary": "Compare DIGIPIN, GeoHash, and Plus Code" } },
+            "/plus-code": { "get": { "summary": "Encode coordinates to Plus Code" } },
+            "/geohash": { "get": { "summary": "Encode coordinates to GeoHash" } },
+            "/explore": { "get": { "summary": "Return all DIGIPIN prefix levels" } },
             "/cell": { "get": { "summary": "Return DIGIPIN cell center and bounds" } },
             "/geojson": { "get": { "summary": "Return DIGIPIN cell as GeoJSON Feature" } },
             "/openapi.json": { "get": { "summary": "Return this OpenAPI document" } }
