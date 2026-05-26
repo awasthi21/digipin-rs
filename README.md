@@ -1,38 +1,53 @@
 # digipin-rs
 
-Rust implementation of India Post DIGIPIN encode/decode logic.
+Rust toolkit for India Post DIGIPIN.
 
-DIGIPIN converts latitude/longitude within India's official bounding box into a
-10-character geocode. This crate provides a reusable Rust library and a small
-CLI for local/offline conversion.
+`digipin-rs` gives you a fast, offline, deterministic implementation of the
+India Post DIGIPIN algorithm, plus developer utilities for CLI workflows, batch
+conversion, GeoJSON export, and a tiny local HTTP API.
 
-Official reference:
+The core encoder/decoder stays compatible with the India Post reference logic.
+Everything else is built around it so developers can inspect cells, prefixes,
+bounds, neighboring cells, and structured JSON output without changing official
+DIGIPIN behavior.
 
-- India Post DIGIPIN page: <https://www.indiapost.gov.in/digipin>
-- India Post GitHub repository: <https://github.com/INDIAPOST-gov/digipin>
+[![Rust](https://img.shields.io/badge/rust-2021-orange)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![DIGIPIN](https://img.shields.io/badge/India%20Post-DIGIPIN-green)](https://www.indiapost.gov.in/digipin)
+
+## Why This Exists
+
+DIGIPIN is useful, but the official reference implementation is only the start.
+Real developer workflows need more:
+
+- Convert coordinates to DIGIPIN from CLI, code, CSV, JSONL, or HTTP.
+- Decode a DIGIPIN into its center point and cell bounds.
+- Inspect partial prefixes like `4P3` as larger grid cells.
+- Export cells as GeoJSON for maps and GIS tools.
+- Run everything offline with no network calls.
 
 ## Install
+
+From this repository:
 
 ```bash
 cargo install --path .
 ```
 
-Use it as a library from this repository:
+Use it as a Rust library:
 
 ```toml
 [dependencies]
 digipin-rs = { path = "." }
 ```
 
-## CLI
+## Quick Start
 
-Encode coordinates:
+Encode latitude/longitude:
 
 ```bash
 digipin encode 12.9716 77.5946
 ```
-
-Output:
 
 ```text
 4P3-JK8-52C9
@@ -44,80 +59,80 @@ Decode a DIGIPIN:
 digipin decode 4P3-JK8-52C9
 ```
 
-Output:
-
 ```text
 12.971601,77.594584
 ```
 
-JSON output:
-
-```bash
-digipin --json encode 12.9716 77.5946
-```
-
-Example JSON:
-
-```json
-{
-  "latitude": 12.9716,
-  "longitude": 77.5946,
-  "digipin": "4P3-JK8-52C9"
-}
-```
-
-Validate/normalize:
-
-```bash
-digipin validate 4p3jk852c9
-```
-
-Output:
-
-```text
-4P3-JK8-52C9
-```
-
-Inspect cell center and bounds:
-
-```bash
-digipin --json cell 4P3-JK8-52C9
-```
-
-Inspect a partial DIGIPIN prefix as a larger grid cell:
-
-```bash
-digipin --json partial-cell 4P3
-```
-
-Export a DIGIPIN cell as GeoJSON:
-
-```bash
-digipin geojson 4P3-JK8-52C9
-```
-
-Get precision-aware metadata for a coordinate:
+Get JSON output:
 
 ```bash
 digipin --json locate 12.9716 77.5946
 ```
 
-Plain text output is also available:
+Trimmed preview:
 
-```bash
-digipin locate 12.9716 77.5946
+```json
+{
+  "input": {
+    "latitude": 12.9716,
+    "longitude": 77.5946
+  },
+  "digipin": "4P3-JK8-52C9",
+  "cell": {
+    "center": {
+      "latitude": 12.971601,
+      "longitude": 77.594584
+    }
+  }
+}
 ```
 
-List adjacent DIGIPIN cells:
+## What You Can Do
+
+| Need | Command/API |
+| --- | --- |
+| Encode coordinates | `digipin encode <lat> <lon>` |
+| Decode DIGIPIN | `digipin decode <digipin>` |
+| Validate and normalize | `digipin validate <digipin>` |
+| Inspect cell bounds | `digipin cell <digipin>` |
+| Inspect a prefix cell | `digipin partial-cell <prefix>` |
+| Export GeoJSON | `digipin geojson <digipin>` |
+| List neighboring cells | `digipin neighbors <digipin>` |
+| Measure distance | `digipin distance <lat1> <lon1> <lat2> <lon2>` |
+| Convert CSV files | `digipin batch-csv input.csv --mode encode` |
+| Convert JSONL streams | `digipin batch-jsonl input.jsonl --mode decode` |
+| Run local API | `digipin serve --port 8080` |
+| Print OpenAPI | `digipin openapi` |
+| Generate completions | `digipin completions zsh` |
+
+## CLI Examples
+
+Validate flexible input:
 
 ```bash
-digipin neighbors 4P3-JK8-52C9
+digipin validate " 4p3 jk8 52c9 "
 ```
 
-Measure distance between two coordinates:
+```text
+4P3-JK8-52C9
+```
+
+Inspect a full cell:
 
 ```bash
-digipin distance 12.9716 77.5946 12.9717 77.5946
+digipin --json cell 4P3-JK8-52C9
+```
+
+Inspect a partial prefix:
+
+```bash
+digipin --json partial-cell 4P3
+```
+
+Export a cell as GeoJSON:
+
+```bash
+digipin geojson 4P3-JK8-52C9
 ```
 
 Process a CSV file:
@@ -129,10 +144,11 @@ digipin batch-csv input.csv --mode encode --output output.csv
 Process JSONL from stdin:
 
 ```bash
-printf '{"latitude":12.9716,"longitude":77.5946}\n' | digipin batch-jsonl - --mode encode
+printf '{"latitude":12.9716,"longitude":77.5946}\n' \
+  | digipin batch-jsonl - --mode encode
 ```
 
-Run the local HTTP API:
+Run the local API:
 
 ```bash
 digipin serve --host 127.0.0.1 --port 8080
@@ -145,91 +161,101 @@ Generate shell completions:
 digipin completions zsh > _digipin
 ```
 
-### More CLI examples
-
-Install and run from a clean checkout:
-
-```bash
-cargo run -- encode 28.6139 77.2090
-cargo run -- decode 4P3-JK8-52C9
-cargo run -- validate " 4p3 jk8 52c9 "
-cargo run -- --json locate 12.9716 77.5946
-cargo run -- --json neighbors 4P3-JK8-52C9
-```
-
-Handle invalid input with a non-zero exit:
-
-```bash
-digipin encode 39.0 77.0
-```
-
-```text
-error: latitude out of range
-```
-
-## Library
+## Rust Library
 
 ```rust
 let code = digipin::encode(12.9716, 77.5946)?;
 let coords = digipin::decode(&code)?;
 let cell = digipin::cell(&code)?;
 let info = digipin::locate(12.9716, 77.5946)?;
-let partial = digipin::partial_cell("4P3")?;
+let prefix = digipin::partial_cell("4P3")?;
 let geojson = digipin::digipin_geojson_feature(&code)?;
 ```
 
-Run the example:
+Run the included example:
 
 ```bash
 cargo run --example quickstart
 ```
 
-## Features
+## HTTP API
 
-- Encode latitude/longitude to canonical `XXX-XXX-XXXX` DIGIPIN.
-- Decode DIGIPIN to grid-cell center coordinates.
-- Normalize flexible input such as `4p3jk852c9`.
-- Validate DIGIPIN strings.
-- Report the India Post supported latitude/longitude bounding box.
-- Check whether a coordinate is inside the supported bounding box before encode.
-- Return grid-cell bounds for precision-aware applications.
-- Return approximate cell width/height in meters.
-- Check whether a coordinate falls inside a DIGIPIN cell.
-- Return all 8 adjacent DIGIPIN cells.
-- Measure haversine distance between coordinates.
-- Return rich `locate` metadata for one coordinate lookup.
-- Decode partial DIGIPIN prefixes into larger grid cells.
-- Export DIGIPIN cells as GeoJSON Polygon/Feature data.
-- Process CSV files with encode/decode/validate modes.
-- Process newline-delimited JSON records.
-- Run a small local HTTP API server.
-- Generate shell completion scripts.
-- Print a small OpenAPI document for the HTTP API.
-- CLI supports plain text and JSON output.
-- JSON responses use `serde`-serializable public structs.
-- Errors use a typed `DigiPinError` enum with display messages.
-- Canonical formatting inserts separators after the third and sixth characters.
-- Flexible normalization accepts lowercase, whitespace, and missing separators.
-- Library functions are deterministic and offline; no network calls are made.
-- Includes unit and integration test coverage for public API behavior.
+Start the local server:
+
+```bash
+digipin serve --port 8080
+```
+
+Available endpoints:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /health` | Health check |
+| `GET /encode?latitude=...&longitude=...` | Encode coordinates |
+| `GET /decode?digipin=...` | Decode DIGIPIN |
+| `GET /locate?latitude=...&longitude=...` | Encode with metadata |
+| `GET /cell?digipin=...` | Return cell center and bounds |
+| `GET /geojson?digipin=...` | Return cell as GeoJSON Feature |
+| `GET /openapi.json` | Return OpenAPI document |
+
+## Current Features
+
+- Official-compatible DIGIPIN encode/decode.
+- Canonical `XXX-XXX-XXXX` formatting.
+- Flexible normalization for lowercase, spaces, and missing separators.
+- Typed errors through `DigiPinError`.
+- Full cell center and bounds.
+- Partial prefix cells for hierarchy exploration.
+- Approximate cell width and height in meters.
+- Coordinate containment checks.
+- Neighboring DIGIPIN cells.
+- Haversine distance utility.
+- GeoJSON Polygon and Feature export.
+- CSV and JSONL batch workflows.
+- Local HTTP API server.
+- OpenAPI document generation.
+- Shell completion generation.
+- Unit and integration tests.
 
 ## Roadmap
 
-- Publish the crate to crates.io once the public API settles.
-- Add official reference vectors as fixtures when India Post publishes stable examples.
-- Add CLI snapshot tests for plain text and JSON output.
-- Add examples for web service integration.
-- Add no-std feasibility notes for embedded/offline deployments.
-- Add benchmark coverage for high-volume batch conversion.
-- Add fuzz/property tests for normalize, encode, decode, and bounds invariants.
-- Add release automation for tagged GitHub releases and generated changelogs.
+| Priority | Feature | Why It Matters |
+| --- | --- | --- |
+| 1 | Prefix Explorer | Inspect each DIGIPIN prefix level with center, bounds, and approximate cell size. |
+| 2 | GeoHash Comparison Tool | Compare DIGIPIN with GeoHash and Plus Codes using the same coordinate. Useful for developers evaluating location systems. |
+| 3 | Plus Code Converter | Return DIGIPIN and Open Location Code side by side for interoperability. |
+| 4 | Web Playground | Browser UI for encode/decode, prefix explorer, GeoJSON preview, and map display. |
+| 5 | WASM Build | Run the encoder directly in browser apps without a backend. |
+| 6 | Docker Image | One-command API server for local or cloud deployment. |
+| 7 | Python Package | Make it useful for data teams and notebooks. |
+| 8 | Node Package | Make it easy to use from web apps and backend services. |
+| 9 | Postgres Functions | Enable DIGIPIN conversion directly inside databases. |
+| 10 | Benchmark Suite | Publish performance numbers for batch conversion. |
 
-## Design note
+## Official References
 
-The core encode/decode algorithm is kept compatible with the India Post
-reference behavior. Extra APIs are built around that algorithm so applications
-can reason about precision, larger prefixes, neighboring cells, and JSON
-workflows without changing official DIGIPIN output.
+- India Post DIGIPIN page: <https://www.indiapost.gov.in/digipin>
+- India Post GitHub repository: <https://github.com/INDIAPOST-gov/digipin>
+
+## Development
+
+Run tests:
+
+```bash
+cargo test
+```
+
+Format:
+
+```bash
+cargo fmt
+```
+
+Check CLI:
+
+```bash
+cargo run -- --help
+```
 
 ## License
 
